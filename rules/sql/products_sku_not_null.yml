@@ -1,0 +1,5 @@
+name: products_sku_not_null
+description: Every product must have a SKU.
+expectation_type: expect_column_values_to_not_be_null
+kwargs:
+  column: sku

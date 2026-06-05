@@ -1,0 +1,8 @@
+name: customers_status_in_set
+description: Customer status must be active or inactive.
+expectation_type: expect_column_values_to_be_in_set
+kwargs:
+  column: status
+  value_set:
+    - active
+    - inactive

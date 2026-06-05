@@ -1,0 +1,36 @@
+name: spark_table_validation_postgres
+spark:
+  master: local[*]
+  app_name: gx_spark_validation_postgres
+  config:
+    spark.jars.packages: org.postgresql:postgresql:42.7.7
+sources:
+  postgres_demo:
+    kind: jdbc
+    url: ${POSTGRES_JDBC_URL}
+    properties:
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+      driver: org.postgresql.Driver
+validations:
+  - name: spark_customers
+    type: spark_table
+    source: postgres_demo
+    table: public.customers
+    rules:
+      - rules/sql/customers_email_not_null.yml
+      - rules/sql/customers_status_in_set.yml
+  - name: spark_products
+    type: spark_table
+    source: postgres_demo
+    table: public.products
+    rules:
+      - rules/sql/products_sku_not_null.yml
+      - rules/sql/products_price_between_1_and_1000.yml
+  - name: spark_orders
+    type: spark_table
+    source: postgres_demo
+    table: public.orders
+    rules:
+      - rules/sql/orders_customer_id_not_null.yml
+      - rules/sql/orders_total_between_1_and_1000.yml

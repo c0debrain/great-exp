@@ -1,0 +1,5 @@
+name: customers_email_not_null
+description: Every customer row must have an email address.
+expectation_type: expect_column_values_to_not_be_null
+kwargs:
+  column: email

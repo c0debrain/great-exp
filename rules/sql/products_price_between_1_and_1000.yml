@@ -1,0 +1,7 @@
+name: products_price_between_1_and_1000
+description: Product price must be between 1 and 1000 inclusive.
+expectation_type: expect_column_values_to_be_between
+kwargs:
+  column: price
+  min_value: 1
+  max_value: 1000

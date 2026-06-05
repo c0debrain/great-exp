@@ -1,0 +1,8 @@
+__pycache__/
+gx
+.gx_runtime/
+reports/
+logs/
+*.log
+warehouse/
+drivers/
