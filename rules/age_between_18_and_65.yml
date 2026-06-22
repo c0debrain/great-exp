@@ -1,7 +1,0 @@
-name: age_between_18_and_65
-description: Age must be between 18 and 65 inclusive.
-expectation_type: expect_column_values_to_be_between
-kwargs:
-  column: age
-  min_value: 18
-  max_value: 65

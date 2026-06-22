@@ -1,0 +1,34 @@
+name: athena_validation_ministack
+sources:
+  athena_demo:
+    kind: athena_sqlalchemy
+    endpoint_url: ${MINISTACK_ENDPOINT_URL}
+    aws_access_key_id: ${MINISTACK_AWS_ACCESS_KEY_ID}
+    aws_secret_access_key: ${MINISTACK_AWS_SECRET_ACCESS_KEY}
+    region_name: ${ATHENA_REGION_NAME}
+    work_group: ${ATHENA_WORK_GROUP}
+    schema_name: ${ATHENA_SCHEMA_NAME}
+    catalog_name: ${ATHENA_CATALOG_NAME}
+    s3_staging_dir: ${MINISTACK_ATHENA_S3_STAGING_DIR}
+validations:
+  - name: athena_customers
+    type: sqlalchemy_table
+    source: athena_demo
+    table: ${ATHENA_CUSTOMERS_TABLE}
+    rules:
+      - rules/sql/customers_email_not_null.yml
+      - rules/sql/customers_status_in_set.yml
+  - name: athena_products
+    type: sqlalchemy_table
+    source: athena_demo
+    table: ${ATHENA_PRODUCTS_TABLE}
+    rules:
+      - rules/sql/products_sku_not_null.yml
+      - rules/sql/products_price_between_1_and_1000.yml
+  - name: athena_orders
+    type: sqlalchemy_table
+    source: athena_demo
+    table: ${ATHENA_ORDERS_TABLE}
+    rules:
+      - rules/sql/orders_customer_id_not_null.yml
+      - rules/sql/orders_total_between_1_and_1000.yml

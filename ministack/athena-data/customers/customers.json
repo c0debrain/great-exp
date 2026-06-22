@@ -1,0 +1,3 @@
+{"customer_id":1,"email":"alice@example.com","status":"active"}
+{"customer_id":2,"email":"bob@example.com","status":"inactive"}
+{"customer_id":3,"email":"cara@example.com","status":"active"}

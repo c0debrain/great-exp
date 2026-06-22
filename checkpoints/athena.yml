@@ -1,32 +1,29 @@
-name: spark_table_validation_athena
-spark:
-  master: local[*]
-  app_name: gx_spark_validation_athena
-  config:
-    spark.jars: ${ATHENA_JDBC_DRIVER_PATH}
+name: athena_validation
 sources:
   athena_demo:
-    kind: jdbc
-    url: ${ATHENA_JDBC_URL}
-    properties:
-      driver: com.amazon.athena.jdbc.AthenaDriver
+    kind: athena_sqlalchemy
+    region_name: ${ATHENA_REGION_NAME}
+    work_group: ${ATHENA_WORK_GROUP}
+    schema_name: ${ATHENA_SCHEMA_NAME}
+    catalog_name: ${ATHENA_CATALOG_NAME}
+    s3_staging_dir: ${ATHENA_S3_STAGING_DIR}
 validations:
-  - name: spark_customers
-    type: spark_table
+  - name: athena_customers
+    type: sqlalchemy_table
     source: athena_demo
     table: ${ATHENA_CUSTOMERS_TABLE}
     rules:
       - rules/sql/customers_email_not_null.yml
       - rules/sql/customers_status_in_set.yml
-  - name: spark_products
-    type: spark_table
+  - name: athena_products
+    type: sqlalchemy_table
     source: athena_demo
     table: ${ATHENA_PRODUCTS_TABLE}
     rules:
       - rules/sql/products_sku_not_null.yml
       - rules/sql/products_price_between_1_and_1000.yml
-  - name: spark_orders
-    type: spark_table
+  - name: athena_orders
+    type: sqlalchemy_table
     source: athena_demo
     table: ${ATHENA_ORDERS_TABLE}
     rules:

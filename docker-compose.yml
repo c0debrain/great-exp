@@ -1,17 +1,31 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: gx-postgres
-    environment:
-      POSTGRES_DB: gx_demo
-      POSTGRES_USER: gx
-      POSTGRES_PASSWORD: gx
+  ministack:
+    image: ministackorg/ministack:full
+    container_name: gx-ministack
     ports:
-      - "5432:5432"
+      - "4566:4566"
+    environment:
+      MINISTACK_REGION: us-east-1
+      MINISTACK_ACCOUNT_ID: "000000000000"
+      ATHENA_ENGINE: duckdb
+      S3_PERSIST: "1"
+      S3_DATA_DIR: /tmp/ministack-data/s3
+      PERSIST_STATE: "1"
+      STATE_DIR: /tmp/ministack-state
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
     volumes:
-      - ./sql/init:/docker-entrypoint-initdb.d:ro
+      - ./ministack/init:/docker-entrypoint-initaws.d:ro
+      - ./ministack/athena-data:/seed/athena-data:ro
+      - ministack-state:/tmp/ministack-state
+      - ministack-s3:/tmp/ministack-data/s3
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gx -d gx_demo"]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/ready', timeout=2)\""]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
+
+volumes:
+  ministack-state:
+  ministack-s3:

@@ -4,5 +4,5 @@ gx
 reports/
 logs/
 *.log
-warehouse/
-drivers/
+ministack/state/
+ministack/s3/
