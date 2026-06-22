@@ -11,7 +11,7 @@ This repo validates Athena tables with `great_expectations==1.8.1`. Rules and ch
 - `docker-compose.yml`: starts MiniStack's full image for local Athena checks
 - `ministack/athena-data/`: JSON seed data uploaded into MiniStack S3
 - `ministack/init/ready.d/10_seed_athena.py`: creates S3 buckets, registers Glue tables, and smoke-tests Athena
-- `validate.py`: runs checkpoints, writes GX Data Docs to `reports/`, and writes Allure result files to `allure-results/`
+- `validate.py`: runs checkpoints and writes GX, Allure, and JUnit reports
 
 ## Install
 
@@ -55,16 +55,22 @@ Allure result files are written to:
 allure-results/
 ```
 
-If the Allure CLI is installed, generate the HTML report with:
-
-```bash
-allure generate allure-results --clean -o allure-report
-```
-
-Then open:
+Allure HTML is generated automatically when `allure` or `npx` is available:
 
 ```text
 allure-report/index.html
+```
+
+JUnit XML for Xray import is written to:
+
+```text
+junit-report/results.xml
+```
+
+JUnit HTML is generated from that XML with `junit2html`:
+
+```text
+junit-report/index.html
 ```
 
 ## Real AWS Athena

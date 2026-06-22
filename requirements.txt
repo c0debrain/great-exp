@@ -1,5 +1,5 @@
 great_expectations==1.8.1
-pandas>=2.0
 PyYAML>=6.0
 SQLAlchemy>=2.0
 PyAthena[sqlalchemy]>=3.0
+junit2html>=31.1.4

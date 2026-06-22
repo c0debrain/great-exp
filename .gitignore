@@ -4,6 +4,7 @@ gx
 reports/
 allure-results/
 allure-report/
+junit-report/
 logs/
 *.log
 ministack/state/
