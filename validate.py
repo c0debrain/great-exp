@@ -395,12 +395,22 @@ def write_junit(cases):
     ElementTree(suite).write(JUNIT_XML, encoding="utf-8", xml_declaration=True)
 
 
+def run_report_command(cmd):
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return
+    output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+    if output:
+        print(output, file=sys.stderr)
+    raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr) from None
+
+
 def build_junit_html():
     if shutil.which("junit2html"):
         cmd = ["junit2html", str(JUNIT_XML), str(JUNIT_HTML)]
     else:
         cmd = [sys.executable, "-m", "junit2htmlreport", str(JUNIT_XML), str(JUNIT_HTML)]
-    subprocess.run(cmd, check=True)
+    run_report_command(cmd)
     print(f"file://{JUNIT_HTML}")
 
 
@@ -412,7 +422,7 @@ def build_allure_report():
     else:
         print("Allure HTML skipped: install allure or npx.")
         return False
-    subprocess.run(cmd, check=True)
+    run_report_command(cmd)
     print(f"file://{ALLURE_REPORT / 'index.html'}")
     return True
 
