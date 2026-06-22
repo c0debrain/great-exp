@@ -11,7 +11,7 @@ This repo validates Athena tables with `great_expectations==1.8.1`. Rules and ch
 - `docker-compose.yml`: starts MiniStack's full image for local Athena checks
 - `ministack/athena-data/`: JSON seed data uploaded into MiniStack S3
 - `ministack/init/ready.d/10_seed_athena.py`: creates S3 buckets, registers Glue tables, and smoke-tests Athena
-- `validate.py`: runs checkpoints and writes Data Docs to `reports/`
+- `validate.py`: runs checkpoints, writes GX Data Docs to `reports/`, and writes Allure result files to `allure-results/`
 
 ## Install
 
@@ -40,6 +40,32 @@ python3 validate.py checkpoints/athena_ministack.yml
 ```
 
 The MiniStack stack runs `ministackorg/ministack:full` with `ATHENA_ENGINE=duckdb`. The ready script loads `customers`, `products`, and `orders` tables into MiniStack S3/Glue, then runs an Athena smoke query.
+
+## Reports
+
+Great Expectations Data Docs are written to:
+
+```text
+reports/index.html
+```
+
+Allure result files are written to:
+
+```text
+allure-results/
+```
+
+If the Allure CLI is installed, generate the HTML report with:
+
+```bash
+allure generate allure-results --clean -o allure-report
+```
+
+Then open:
+
+```text
+allure-report/index.html
+```
 
 ## Real AWS Athena
 

@@ -1,6 +1,11 @@
+import hashlib
+import json
 import os
 import shutil
+import subprocess
 import sys
+import time
+import uuid
 from pathlib import Path
 
 import great_expectations as gx
@@ -16,163 +21,71 @@ from sqlalchemy.engine import URL
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".gx_runtime"
 REPORTS = ROOT / "reports"
-CONFIG = ROOT / "config.yml"
+ALLURE_RESULTS = ROOT / "allure-results"
+ALLURE_REPORT = ROOT / "allure-report"
 DEFAULT_CHECKPOINT = "checkpoints/athena_ministack.yml"
 
 
 def load_yaml(path):
-    return yaml.safe_load(path.read_text())
+    return yaml.safe_load((ROOT / path).read_text())
 
 
-def load_config_env():
-    if not CONFIG.exists():
-        return
-    for key, value in load_yaml(CONFIG).items():
-        os.environ.setdefault(key, str(value))
+def load_env():
+    config = ROOT / "config.yml"
+    if config.exists():
+        for key, value in yaml.safe_load(config.read_text()).items():
+            os.environ.setdefault(key, str(value))
 
 
-def resolve_env(value):
+def env(value):
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-        env_name = value[2:-1]
-        if env_name not in os.environ:
-            raise SystemExit(f"Environment variable '{env_name}' is required.")
-        return os.environ[env_name]
+        key = value[2:-1]
+        if key not in os.environ:
+            raise SystemExit(f"Environment variable '{key}' is required.")
+        return os.environ[key]
     if isinstance(value, dict):
-        return {key: resolve_env(item) for key, item in value.items()}
+        return {k: env(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [resolve_env(item) for item in value]
+        return [env(v) for v in value]
     return value
 
 
-load_config_env()
-
-
-def load_expectation(rule_path):
-    rule = load_yaml(rule_path)
-    return ExpectationConfiguration(
-        type=rule["expectation_type"],
-        kwargs=rule["kwargs"],
-        description=rule.get("description"),
-        meta={"rule_name": rule["name"], "source_file": rule_path.name},
+def reset_outputs():
+    for path in (RUNTIME, REPORTS, ALLURE_RESULTS, ALLURE_REPORT):
+        shutil.rmtree(path, ignore_errors=True)
+        path.mkdir(exist_ok=True)
+    (ALLURE_RESULTS / "environment.properties").write_text(
+        "framework=great_expectations\nrunner=validate.py\nbackend=athena\n"
     )
 
 
-def build_suite(context, validation, default_rules):
-    rules = validation.get("rules", default_rules)
-    expectations = [load_expectation(ROOT / rule) for rule in rules]
-    return context.suites.add_or_update(
-        ExpectationSuite(name=f"{validation['name']}_suite", expectations=expectations)
-    )
+def gx_context():
+    def fs_store(name):
+        return {
+            "class_name": name,
+            "store_backend": {
+                "class_name": "TupleFilesystemStoreBackend",
+                "base_directory": str(RUNTIME / name.lower().replace("store", "")),
+            },
+        }
 
-
-def create_athena_engine(source):
-    region_name = resolve_env(source["region_name"])
-    schema_name = resolve_env(source.get("schema_name", "default"))
-    username = resolve_env(source.get("aws_access_key_id", ""))
-    password = resolve_env(source.get("aws_secret_access_key", ""))
-    query = {}
-    for key in ("catalog_name", "work_group", "s3_staging_dir", "profile_name", "endpoint_url"):
-        if key in source:
-            query[key] = resolve_env(source[key])
-    query.update(resolve_env(source.get("options", {})))
-    url = URL.create(
-        drivername=source.get("driver", "awsathena+rest"),
-        username=username,
-        password=password,
-        host=f"athena.{region_name}.amazonaws.com",
-        port=443,
-        database=schema_name,
-        query={key: str(value) for key, value in query.items()},
-    )
-    return create_engine(url)
-
-
-def read_athena_dataframe(engine, source, validation):
-    query = validation.get("query", source.get("query"))
-    if query:
-        sql = resolve_env(query)
-    else:
-        table = validation.get("table", source.get("table"))
-        if not table:
-            raise SystemExit(f"Athena validation requires either 'table' or 'query': {validation}")
-        sql = f"SELECT * FROM {resolve_env(table)}"
-
-    with engine.connect() as connection:
-        return pd.read_sql_query(text(sql), connection)
-
-
-def run_dataframe_validation(context, validation, dataframe, default_rules):
-    suite = build_suite(context, validation, default_rules)
-    datasource = context.data_sources.add_pandas(name=f"{validation['name']}_ds")
-    asset = datasource.add_dataframe_asset(name=f"{validation['name']}_asset")
-    validation_definition = context.validation_definitions.add_or_update(
-        ValidationDefinition(
-            name=validation["name"],
-            data=asset.add_batch_definition_whole_dataframe("default_batch"),
-            suite=suite,
-        )
-    )
-    checkpoint = context.checkpoints.add_or_update(
-        Checkpoint(name=validation["name"], validation_definitions=[validation_definition])
-    )
-    return checkpoint.run(batch_parameters={"dataframe": dataframe})
-
-
-def run_athena_validation(context, validation, default_rules, sources):
-    if validation["source"] not in sources:
-        raise SystemExit(f"Source '{validation['source']}' is not defined in the checkpoint.")
-
-    source = sources[validation["source"]]
-    if source["kind"] != "athena_sqlalchemy":
-        raise SystemExit(f"Unsupported Athena source kind: {source['kind']}")
-
-    engine = create_athena_engine(source)
-    try:
-        dataframe = read_athena_dataframe(engine, source, validation)
-        return run_dataframe_validation(context, validation, dataframe, default_rules)
-    finally:
-        engine.dispose()
-
-
-def create_context():
-    shutil.rmtree(RUNTIME, ignore_errors=True)
-    shutil.rmtree(REPORTS, ignore_errors=True)
-    RUNTIME.mkdir(exist_ok=True)
-    REPORTS.mkdir(exist_ok=True)
+    stores = {
+        "expectations_store": fs_store("ExpectationsStore"),
+        "validation_results_store": fs_store("ValidationResultsStore"),
+        "validation_definition_store": fs_store("ValidationDefinitionStore"),
+        "checkpoint_store": {
+            "class_name": "CheckpointStore",
+            "store_backend": {
+                "class_name": "TupleFilesystemStoreBackend",
+                "suppress_store_backend_id": True,
+                "base_directory": str(RUNTIME / "checkpoints"),
+            },
+        },
+    }
     return gx.get_context(
         project_config=DataContextConfig(
             config_version=4.0,
-            stores={
-                "expectations_store": {
-                    "class_name": "ExpectationsStore",
-                    "store_backend": {
-                        "class_name": "TupleFilesystemStoreBackend",
-                        "base_directory": str(RUNTIME / "expectations"),
-                    },
-                },
-                "validation_results_store": {
-                    "class_name": "ValidationResultsStore",
-                    "store_backend": {
-                        "class_name": "TupleFilesystemStoreBackend",
-                        "base_directory": str(RUNTIME / "validations"),
-                    },
-                },
-                "checkpoint_store": {
-                    "class_name": "CheckpointStore",
-                    "store_backend": {
-                        "class_name": "TupleFilesystemStoreBackend",
-                        "suppress_store_backend_id": True,
-                        "base_directory": str(RUNTIME / "checkpoints"),
-                    },
-                },
-                "validation_definition_store": {
-                    "class_name": "ValidationDefinitionStore",
-                    "store_backend": {
-                        "class_name": "TupleFilesystemStoreBackend",
-                        "base_directory": str(RUNTIME / "validation_definitions"),
-                    },
-                },
-            },
+            stores=stores,
             expectations_store_name="expectations_store",
             validation_results_store_name="validation_results_store",
             checkpoint_store_name="checkpoint_store",
@@ -194,22 +107,149 @@ def create_context():
     )
 
 
-def run_checkpoint(checkpoint_file):
-    context = create_context()
-    checkpoint = load_yaml(ROOT / checkpoint_file)
-    results = [
-        run_athena_validation(
-            context,
-            validation,
-            checkpoint.get("rules", []),
-            checkpoint.get("sources", {}),
+def athena_engine(source):
+    region = env(source["region_name"])
+    query = {
+        k: env(source[k])
+        for k in ("catalog_name", "work_group", "s3_staging_dir", "profile_name", "endpoint_url")
+        if k in source
+    }
+    query.update(env(source.get("options", {})))
+    url = URL.create(
+        drivername=source.get("driver", "awsathena+rest"),
+        username=env(source.get("aws_access_key_id", "")),
+        password=env(source.get("aws_secret_access_key", "")),
+        host=f"athena.{region}.amazonaws.com",
+        port=443,
+        database=env(source.get("schema_name", "default")),
+        query={k: str(v) for k, v in query.items()},
+    )
+    return create_engine(url)
+
+
+def athena_frame(source, validation):
+    sql = env(validation.get("query") or source.get("query") or f"SELECT * FROM {env(validation['table'])}")
+    engine = athena_engine(source)
+    try:
+        with engine.connect() as connection:
+            return pd.read_sql_query(text(sql), connection)
+    finally:
+        engine.dispose()
+
+
+def gx_validate(context, validation, dataframe, rules):
+    suite = context.suites.add_or_update(
+        ExpectationSuite(
+            name=f"{validation['name']}_suite",
+            expectations=[
+                ExpectationConfiguration(
+                    type=(rule := load_yaml(path))["expectation_type"],
+                    kwargs=rule["kwargs"],
+                    description=rule.get("description"),
+                    meta={"rule_name": rule["name"], "source_file": Path(path).name},
+                )
+                for path in validation.get("rules", rules)
+            ],
         )
-        for validation in checkpoint["validations"]
-    ]
-    for result in results:
-        print(result.describe())
+    )
+    datasource = context.data_sources.add_pandas(name=f"{validation['name']}_ds")
+    asset = datasource.add_dataframe_asset(name=f"{validation['name']}_asset")
+    definition = context.validation_definitions.add_or_update(
+        ValidationDefinition(
+            name=validation["name"],
+            data=asset.add_batch_definition_whole_dataframe("default_batch"),
+            suite=suite,
+        )
+    )
+    checkpoint = context.checkpoints.add_or_update(
+        Checkpoint(name=validation["name"], validation_definitions=[definition])
+    )
+    return checkpoint.run(batch_parameters={"dataframe": dataframe})
+
+
+def failure_message(result):
+    failures = []
+    for validation_result in result.describe().get("validation_results", []):
+        for expectation in validation_result.get("expectations", []):
+            if expectation.get("success"):
+                continue
+            column = expectation.get("kwargs", {}).get("column")
+            count = expectation.get("result", {}).get("unexpected_count")
+            failures.append(f"{expectation.get('expectation_type')} on {column}: {count} unexpected")
+    return "; ".join(failures) or "Great Expectations validation failed."
+
+
+def allure_result(validation, status, start, stop, message=None, trace=None):
+    full_name = f"athena_validation.{validation['name']}"
+    test_id = hashlib.md5(full_name.encode()).hexdigest()
+    data = {
+        "uuid": str(uuid.uuid4()),
+        "historyId": test_id,
+        "testCaseId": test_id,
+        "fullName": full_name,
+        "name": validation["name"],
+        "status": status,
+        "stage": "finished",
+        "start": start,
+        "stop": stop,
+        "labels": [
+            {"name": "framework", "value": "great_expectations"},
+            {"name": "suite", "value": "athena"},
+            {"name": "feature", "value": "Athena data validation"},
+        ],
+        "parameters": [{"name": "table", "value": str(env(validation.get("table", "")))}],
+    }
+    if message:
+        data["statusDetails"] = {"message": message, "trace": trace or message}
+    (ALLURE_RESULTS / f"{data['uuid']}-result.json").write_text(json.dumps(data, indent=2) + "\n")
+
+
+def run_validation(context, validation, checkpoint):
+    source = checkpoint["sources"][validation["source"]]
+    start = int(time.time() * 1000)
+    try:
+        result = gx_validate(context, validation, athena_frame(source, validation), checkpoint.get("rules", []))
+    except Exception as exc:
+        allure_result(validation, "broken", start, int(time.time() * 1000), str(exc), repr(exc))
+        raise
+    allure_result(
+        validation,
+        "passed" if result.success else "failed",
+        start,
+        int(time.time() * 1000),
+        None if result.success else failure_message(result),
+        None if result.success else json.dumps(result.describe(), indent=2, default=str),
+    )
+    return result
+
+
+def build_allure_report():
+    if shutil.which("allure"):
+        cmd = ["allure", "generate", str(ALLURE_RESULTS), "--clean", "-o", str(ALLURE_REPORT)]
+    elif shutil.which("npx"):
+        cmd = ["npx", "--yes", "allure-commandline", "generate", str(ALLURE_RESULTS), "--clean", "-o", str(ALLURE_REPORT)]
+    else:
+        print("Allure HTML skipped: install allure or npx.")
+        return False
+    subprocess.run(cmd, check=True)
+    print(f"file://{ALLURE_REPORT / 'index.html'}")
+    return True
+
+
+def main(paths):
+    load_env()
+    reset_outputs()
+    context = gx_context()
+    success = True
+    for path in paths or [DEFAULT_CHECKPOINT]:
+        checkpoint = load_yaml(path)
+        for validation in checkpoint["validations"]:
+            result = run_validation(context, validation, checkpoint)
+            print(result.describe())
+            success = success and result.success
     print(context.build_data_docs()["local_site"])
-    return all(result.success for result in results)
+    build_allure_report()
+    return 0 if success else 1
 
 
-raise SystemExit(0 if all(run_checkpoint(path) for path in (sys.argv[1:] or [DEFAULT_CHECKPOINT])) else 1)
+raise SystemExit(main(sys.argv[1:]))

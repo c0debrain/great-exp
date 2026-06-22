@@ -2,6 +2,8 @@ __pycache__/
 gx
 .gx_runtime/
 reports/
+allure-results/
+allure-report/
 logs/
 *.log
 ministack/state/
