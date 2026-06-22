@@ -395,13 +395,20 @@ def write_junit(cases):
     ElementTree(suite).write(JUNIT_XML, encoding="utf-8", xml_declaration=True)
 
 
-def run_report_command(cmd):
+def run_report_command(cmd, output_path=None, quiet_failure=False):
     result = subprocess.run(cmd, capture_output=True, text=True)
+    if output_path and result.stdout.strip() and not output_path.exists():
+        output_path.write_text(result.stdout)
     if result.returncode == 0:
         return
-    output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
-    if output:
-        print(output, file=sys.stderr)
+    if not quiet_failure:
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr)
+        elif result.stdout.strip():
+            print(
+                f"Report command failed with exit code {result.returncode}; stdout was captured and suppressed.",
+                file=sys.stderr,
+            )
     raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr) from None
 
 
@@ -410,19 +417,25 @@ def build_junit_html():
         cmd = ["junit2html", str(JUNIT_XML), str(JUNIT_HTML)]
     else:
         cmd = [sys.executable, "-m", "junit2htmlreport", str(JUNIT_XML), str(JUNIT_HTML)]
-    run_report_command(cmd)
+    run_report_command(cmd, JUNIT_HTML)
     print(f"file://{JUNIT_HTML}")
 
 
 def build_allure_report():
     if shutil.which("allure"):
-        cmd = ["allure", "generate", str(ALLURE_RESULTS), "--clean", "-o", str(ALLURE_REPORT)]
+        cmd = ["allure", "generate"]
     elif shutil.which("npx"):
-        cmd = ["npx", "--yes", "allure-commandline", "generate", str(ALLURE_RESULTS), "--clean", "-o", str(ALLURE_REPORT)]
+        cmd = ["npx", "--yes", "allure-commandline", "generate"]
     else:
         print("Allure HTML skipped: install allure or npx.")
         return False
-    run_report_command(cmd)
+    base_args = [str(ALLURE_RESULTS), "--clean", "-o", str(ALLURE_REPORT)]
+    single_file_cmd = [*cmd, "--single-file", *base_args]
+    fallback_cmd = [*cmd, *base_args]
+    try:
+        run_report_command(single_file_cmd, ALLURE_REPORT / "index.html", quiet_failure=True)
+    except subprocess.CalledProcessError:
+        run_report_command(fallback_cmd, ALLURE_REPORT / "index.html")
     print(f"file://{ALLURE_REPORT / 'index.html'}")
     return True
 

@@ -9,3 +9,4 @@ logs/
 *.log
 ministack/state/
 ministack/s3/
+.DS_Store
