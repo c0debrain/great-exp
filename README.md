@@ -42,6 +42,34 @@ python3 validate.py checkpoints/athena_ministack.yml
 
 The MiniStack stack runs `ministackorg/ministack:full` with `ATHENA_ENGINE=duckdb`. The ready script loads `customers`, `products`, and `orders` tables into MiniStack S3/Glue, then runs an Athena smoke query.
 
+### Corporate Proxy Or Zscaler
+
+If local MiniStack validation fails with `botocore` or connection errors on a machine using Zscaler or another corporate proxy, check whether proxy environment variables are forcing local Docker traffic through the proxy:
+
+```bash
+env | grep -i proxy
+```
+
+For local MiniStack, bypass the proxy for local addresses and disable AWS metadata lookups:
+
+```bash
+export NO_PROXY=localhost,127.0.0.1,::1,0.0.0.0,host.docker.internal
+export no_proxy=$NO_PROXY
+export AWS_EC2_METADATA_DISABLED=true
+```
+
+Then rerun:
+
+```bash
+python3 validate.py checkpoints/athena_ministack.yml
+```
+
+The local checkpoint expects MiniStack at:
+
+```yaml
+MINISTACK_ENDPOINT_URL: http://localhost:4566
+```
+
 ## Reports
 
 Great Expectations Data Docs are written to:
