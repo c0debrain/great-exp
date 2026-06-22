@@ -6,7 +6,8 @@ This repo validates Athena tables with `great_expectations==1.8.1`. Rules and ch
 
 - `checkpoints/athena.yml`: real AWS Athena checkpoint through SQLAlchemy/PyAthena
 - `checkpoints/athena_ministack.yml`: local MiniStack Athena checkpoint through SQLAlchemy/PyAthena
-- `rules/sql/*.yml`: Athena table expectation rules
+- `rules/yml/*.yml`: YAML-defined Athena table expectation rules
+- `rules/python/*.py`: Python-defined GX expectation rules for richer checks
 - `config.yml`: default values used to resolve `${...}` placeholders
 - `docker-compose.yml`: starts MiniStack's full image for local Athena checks
 - `ministack/athena-data/`: JSON seed data uploaded into MiniStack S3
@@ -98,4 +99,91 @@ Authentication comes from the normal boto3/AWS credential chain. Set `ATHENA_S3_
 
 ## Adding Rules
 
-Add expectation files under `rules/sql/`, then add a validation entry to the target checkpoint with `type: sqlalchemy_table`.
+Add expectation files under `rules/yml/` or `rules/python/`, then add them to the target checkpoint validation.
+
+Every validation must define `test_key`. This value is written to JUnit XML, added to Allure labels/parameters, and included in each GX expectation's metadata and description so it is visible in generated GX HTML.
+
+```yaml
+validations:
+  - name: athena_customers
+    test_key: TEST-101
+    type: sqlalchemy_table
+    source: athena_demo
+    table: ${ATHENA_CUSTOMERS_TABLE}
+    rules:
+      - rules/yml/customers_email_not_null.yml
+      - rules/python/customers_status_in_set.py
+```
+
+The generated JUnit testcase includes:
+
+```xml
+<properties>
+  <property name="test_key" value="TEST-101" />
+</properties>
+```
+
+YAML rules map directly to one Great Expectations expectation:
+
+```yaml
+name: products_price_between_1_and_1000
+description: Product price must be between 1 and 1000 inclusive.
+expectation_type: expect_column_values_to_be_between
+kwargs:
+  column: price
+  min_value: 1
+  max_value: 1000
+```
+
+Python rules define an `expectations()` function and can return one expectation or a list of expectations:
+
+```python
+def expectations():
+    return {
+        "type": "expect_column_values_to_be_in_set",
+        "description": "Customer status must be active or inactive.",
+        "kwargs": {
+            "column": "status",
+            "value_set": ["active", "inactive"],
+        },
+    }
+```
+
+Python rule functions may also accept `validation`, `source`, or `env` keyword arguments when a rule needs checkpoint context or resolved config values. For Athena, verify new expectation types against MiniStack because some GX SQLAlchemy metrics are dialect-sensitive.
+
+```python
+def expectations(validation, env):
+    return {
+        "type": "expect_table_row_count_to_be_between",
+        "kwargs": {
+            "min_value": 1,
+        },
+    }
+```
+
+For cross-table validation, a Python rule can also define `query()`. The query should return the rows that the expectation will validate:
+
+```python
+def query(env):
+    orders = env("${ATHENA_ORDERS_TABLE}")
+    customers = env("${ATHENA_CUSTOMERS_TABLE}")
+    return f"""
+        SELECT o.order_id, o.customer_id
+        FROM {orders} o
+        LEFT JOIN {customers} c
+            ON o.customer_id = c.customer_id
+        WHERE c.customer_id IS NULL
+    """
+
+
+def expectations():
+    return {
+        "type": "expect_table_row_count_to_equal",
+        "description": "Every order customer_id must exist in customers.",
+        "kwargs": {
+            "value": 0,
+        },
+    }
+```
+
+If a Python rule defines `query()`, keep it as the only query-owning rule in that validation. Multiple query-owning rules should be split into separate checkpoint validations.

@@ -9,23 +9,33 @@ sources:
     s3_staging_dir: ${ATHENA_S3_STAGING_DIR}
 validations:
   - name: athena_customers
+    test_key: TEST-101
     type: sqlalchemy_table
     source: athena_demo
     table: ${ATHENA_CUSTOMERS_TABLE}
     rules:
-      - rules/sql/customers_email_not_null.yml
-      - rules/sql/customers_status_in_set.yml
+      - rules/yml/customers_email_not_null.yml
+      - rules/python/customers_status_in_set.py
   - name: athena_products
+    test_key: TEST-102
     type: sqlalchemy_table
     source: athena_demo
     table: ${ATHENA_PRODUCTS_TABLE}
     rules:
-      - rules/sql/products_sku_not_null.yml
-      - rules/sql/products_price_between_1_and_1000.yml
+      - rules/yml/products_sku_not_null.yml
+      - rules/python/products_price_between_1_and_1000.py
   - name: athena_orders
+    test_key: TEST-103
     type: sqlalchemy_table
     source: athena_demo
     table: ${ATHENA_ORDERS_TABLE}
     rules:
-      - rules/sql/orders_customer_id_not_null.yml
-      - rules/sql/orders_total_between_1_and_1000.yml
+      - rules/yml/orders_customer_id_not_null.yml
+      - rules/python/orders_total_between_1_and_1000.py
+  - name: athena_orders_customer_id_exists
+    test_key: TEST-104
+    type: sqlalchemy_table
+    source: athena_demo
+    table: ${ATHENA_ORDERS_TABLE}
+    rules:
+      - rules/python/orders_customer_id_exists.py

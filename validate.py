@@ -1,4 +1,6 @@
 import hashlib
+import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -129,20 +131,134 @@ def athena_connection_string(source):
     return url.render_as_string(hide_password=False)
 
 
+def expectation_config(data, path):
+    expectation_type = data.get("expectation_type") or data.get("type")
+    if not expectation_type:
+        raise ValueError(f"{path} must define expectation_type or type.")
+    kwargs = data.get("kwargs", {})
+    meta = {"rule_name": data.get("name", Path(path).stem), "source_file": Path(path).name}
+    meta.update(data.get("meta", {}))
+    return ExpectationConfiguration(
+        type=expectation_type,
+        kwargs=kwargs,
+        description=data.get("description"),
+        meta=meta,
+    )
+
+
+def load_yaml_expectations(path):
+    return [expectation_config(load_yaml(path), path)]
+
+
+def call_rule_function(func, validation, source):
+    available = {
+        "validation": validation,
+        "source": source,
+        "env": env,
+    }
+    signature = inspect.signature(func)
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return func(**available)
+    kwargs = {name: available[name] for name in signature.parameters if name in available}
+    return func(**kwargs)
+
+
+def load_python_module(path):
+    full_path = ROOT / path
+    module_name = f"gx_rule_{full_path.stem}_{hashlib.md5(str(full_path).encode()).hexdigest()}"
+    spec = importlib.util.spec_from_file_location(module_name, full_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_python_expectations(path, validation, source, module):
+    full_path = ROOT / path
+    if not hasattr(module, "expectations"):
+        raise ValueError(f"{path} must define an expectations() function.")
+    expectations = call_rule_function(module.expectations, validation, source)
+    if isinstance(expectations, (dict, ExpectationConfiguration)):
+        expectations = [expectations]
+    configs = []
+    for item in expectations:
+        if isinstance(item, ExpectationConfiguration):
+            item.meta = {"rule_name": full_path.stem, "source_file": full_path.name, **(item.meta or {})}
+            configs.append(item)
+        else:
+            configs.append(expectation_config({"name": full_path.stem, **item}, path))
+    return configs
+
+
+def load_rule(path, validation, source):
+    suffix = Path(path).suffix
+    if suffix in (".yml", ".yaml"):
+        return {"path": path, "query": None, "expectations": load_yaml_expectations(path)}
+    if suffix == ".py":
+        module = load_python_module(path)
+        query = call_rule_function(module.query, validation, source) if hasattr(module, "query") else None
+        return {
+            "path": path,
+            "query": query,
+            "expectations": load_python_expectations(path, validation, source, module),
+        }
+    raise ValueError(f"Unsupported rule file type for {path}. Use .yml, .yaml, or .py.")
+
+
+def load_rules(validation, source, rules):
+    loaded = []
+    for path in validation.get("rules", rules):
+        loaded.append(load_rule(path, validation, source))
+    return loaded
+
+
+def rule_query(validation, source, loaded_rules):
+    queries = [(rule["path"], rule["query"]) for rule in loaded_rules if rule["query"]]
+    if len(queries) > 1:
+        paths = ", ".join(path for path, _ in queries)
+        raise ValueError(f"{validation['name']} has multiple Python rule queries: {paths}. Split them into separate validations.")
+    if queries:
+        return queries[0][1]
+    return validation.get("query") or source.get("query") or f"SELECT * FROM {env(validation['table'])}"
+
+
+def validation_test_key(validation):
+    test_key = validation.get("test_key")
+    if not test_key:
+        raise ValueError(f"{validation['name']} must define test_key for Xray JUnit import.")
+    return str(env(test_key))
+
+
+def validation_test_metadata(validation):
+    return {"test_key": validation_test_key(validation)}
+
+
+def metadata_text(metadata):
+    return ", ".join(f"{key}={value}" for key, value in metadata.items())
+
+
+def with_metadata_description(description, metadata):
+    suffix = f" [{metadata_text(metadata)}]"
+    return f"{description}{suffix}" if description else suffix.strip()
+
+
+def rule_expectations(validation, loaded_rules):
+    metadata = validation_test_metadata(validation)
+    expectations = []
+    for rule in loaded_rules:
+        for expectation in rule["expectations"]:
+            expectation.meta = {**metadata, **(expectation.meta or {})}
+            expectation.description = with_metadata_description(expectation.description, metadata)
+            expectations.append(expectation)
+    return expectations
+
+
 def gx_validate(context, validation, source, rules):
-    sql = env(validation.get("query") or source.get("query") or f"SELECT * FROM {env(validation['table'])}")
+    loaded_rules = load_rules(validation, source, rules)
+    sql = env(rule_query(validation, source, loaded_rules))
     suite = context.suites.add_or_update(
         ExpectationSuite(
             name=f"{validation['name']}_suite",
-            expectations=[
-                ExpectationConfiguration(
-                    type=(rule := load_yaml(path))["expectation_type"],
-                    kwargs=rule["kwargs"],
-                    description=rule.get("description"),
-                    meta={"rule_name": rule["name"], "source_file": Path(path).name},
-                )
-                for path in validation.get("rules", rules)
-            ],
+            expectations=rule_expectations(validation, loaded_rules),
         )
     )
     datasource = context.data_sources.add_sql(
@@ -165,7 +281,10 @@ def gx_validate(context, validation, source, rules):
 
 def failure_message(result):
     failures = []
-    for validation_result in result.describe().get("validation_results", []):
+    description = result.describe()
+    if not isinstance(description, dict):
+        return str(description)
+    for validation_result in description.get("validation_results", []):
         for expectation in validation_result.get("expectations", []):
             if expectation.get("success"):
                 continue
@@ -178,6 +297,7 @@ def failure_message(result):
 def allure_result(validation, status, start, stop, message=None, trace=None):
     full_name = f"athena_validation.{validation['name']}"
     test_id = hashlib.md5(full_name.encode()).hexdigest()
+    metadata = validation_test_metadata(validation)
     data = {
         "uuid": str(uuid.uuid4()),
         "historyId": test_id,
@@ -192,8 +312,12 @@ def allure_result(validation, status, start, stop, message=None, trace=None):
             {"name": "framework", "value": "great_expectations"},
             {"name": "suite", "value": "athena"},
             {"name": "feature", "value": "Athena data validation"},
+            *[{"name": key, "value": value} for key, value in metadata.items()],
         ],
-        "parameters": [{"name": "table", "value": str(env(validation.get("table", "")))}],
+        "parameters": [
+            {"name": "table", "value": str(env(validation.get("table", "")))},
+            *[{"name": key, "value": value} for key, value in metadata.items()],
+        ],
     }
     if message:
         data["statusDetails"] = {"message": message, "trace": trace or message}
@@ -202,13 +326,20 @@ def allure_result(validation, status, start, stop, message=None, trace=None):
 
 def run_validation(context, validation, checkpoint):
     source = checkpoint["sources"][validation["source"]]
+    metadata = validation_test_metadata(validation)
     start = int(time.time() * 1000)
     try:
         result = gx_validate(context, validation, source, checkpoint.get("rules", []))
     except Exception as exc:
         allure_result(validation, "broken", start, int(time.time() * 1000), str(exc), repr(exc))
         stop = int(time.time() * 1000)
-        return None, {"name": validation["name"], "status": "error", "time": (stop - start) / 1000, "message": str(exc)}
+        return None, {
+            "name": validation["name"],
+            **metadata,
+            "status": "error",
+            "time": (stop - start) / 1000,
+            "message": str(exc),
+        }
     stop = int(time.time() * 1000)
     message = None if result.success else failure_message(result)
     allure_result(
@@ -220,7 +351,13 @@ def run_validation(context, validation, checkpoint):
         None if result.success else json.dumps(result.describe(), indent=2, default=str),
     )
     status = "passed" if result.success else "failed"
-    return result, {"name": validation["name"], "status": status, "time": (stop - start) / 1000, "message": message}
+    return result, {
+        "name": validation["name"],
+        **metadata,
+        "status": status,
+        "time": (stop - start) / 1000,
+        "message": message,
+    }
 
 
 def write_junit(cases):
@@ -248,6 +385,9 @@ def write_junit(cases):
                 "time": f"{case['time']:.3f}",
             },
         )
+        properties = SubElement(testcase, "properties")
+        SubElement(properties, "property", {"name": "test_key", "value": case["test_key"]})
+        SubElement(testcase, "system-out").text = metadata_text({"test_key": case["test_key"]})
         if case["status"] == "failed":
             SubElement(testcase, "failure", {"message": case["message"] or "Validation failed"}).text = case["message"]
         elif case["status"] == "error":
